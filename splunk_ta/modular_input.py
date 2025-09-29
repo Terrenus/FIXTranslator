@@ -1,9 +1,7 @@
-# splunk_ta/modular_input.py
 import requests
-import json
 import time
 import os
-# Example - read lines from /var/log/fix and POST to parser or ingest into Splunk
+
 PARSER_URL = os.environ.get("FIX_PARSER_URL", "http://localhost:9000/parse")
 SPLUNK_HEC = os.environ.get("SPLUNK_HEC_URL", "https://splunk:8088/services/collector")
 SPLUNK_TOKEN = os.environ.get("SPLUNK_TOKEN", "")
@@ -21,7 +19,6 @@ def post_to_splunk(json_event):
     return r.status_code
 
 if __name__ == "__main__":
-    # extremely naive - for demo only
     import sys
     path = sys.argv[1] if len(sys.argv)>1 else "/var/log/fix/sample_fix_messages.txt"
     with open(path) as fh:
@@ -30,4 +27,4 @@ if __name__ == "__main__":
             if not line:
                 continue
             parsed = post_to_parser(line)
-            post_to_splunk(parsed["flat"])
+            post_to_splunk(parsed.get("flat", parsed))

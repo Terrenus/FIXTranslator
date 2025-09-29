@@ -1,4 +1,3 @@
-# fixparser/exporters.py
 import requests
 import json
 import time
