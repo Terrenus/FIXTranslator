@@ -17,3 +17,6 @@ dependencies = [
   "boto3",
   "jinja2",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]

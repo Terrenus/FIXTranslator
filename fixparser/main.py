@@ -1,52 +1,51 @@
-# fixparser/main.py
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from jinja2 import Template
 import os
 import json
-from .parser import FixDictionary, parse_fix_message, flatten, human_summary, human_detail
-from .exporters import send_to_splunk, send_to_datadog, send_to_cloudwatch
+import html
 import logging
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+
+from .parser import FixDictionary, parse_fix_message, flatten, human_summary, human_detail
+
+app = FastAPI(title="FIX Parser Demo")
 
 logger = logging.getLogger("fixparser")
 logger.setLevel(logging.INFO)
 
-app = FastAPI(title="FIXTranslator Demo")
-
-# load dictionaries if provided in dicts/
+# Load dictionaries from dicts/ (if any)
 DICT_DIR = os.path.join(os.path.dirname(__file__), "dicts")
 fix_dict = FixDictionary()
-# attempt to load any xml in dicts/
 if os.path.isdir(DICT_DIR):
     for fname in os.listdir(DICT_DIR):
         if fname.lower().endswith(".xml"):
             try:
                 fix_dict.load_quickfix_xml(os.path.join(DICT_DIR, fname))
+                logger.info("Loaded dictionary: %s", fname)
             except Exception as e:
-                print("dict load error", fname, e)
+                logger.warning("dict load error %s: %s", fname, e)
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
-import json
 
 @app.post("/parse")
 async def parse_endpoint(request: Request):
+    """
+    Accepts:
+      - JSON bodies like {"raw":"..."} OR {"log":"..."} OR {"message":"..."} or Datadog {"attributes": {...}}
+      - JSON arrays (Fluent Bit batches)
+      - Plain text POST with raw FIX in body
+    Returns parsed JSON (single object or array).
+    """
     body_bytes = await request.body()
-    # try to decode JSON first
-    messages = []
-    
     logger.info("Incoming /parse request: %d bytes", len(body_bytes))
+    messages = []
 
+    # Try JSON decode
+    data = None
     try:
-        data = json.loads(body_bytes)
+        if body_bytes:
+            data = json.loads(body_bytes)
     except Exception:
         data = None
 
-    # Accept data shapes:
-    # 1) JSON array of records: each record may have "raw" or "log" or "message"
-    # 2) JSON object with keys "raw" / "log" / "message" or with 'attributes' dict (Datadog)
-    # 3) Plain text body
     if isinstance(data, list):
         for entry in data:
             if isinstance(entry, dict):
@@ -56,7 +55,7 @@ async def parse_endpoint(request: Request):
             elif isinstance(entry, str):
                 messages.append(entry.rstrip("\r\n"))
     elif isinstance(data, dict):
-        # datadog style: {"attributes": {"message": "..."}}
+        # datadog-like shape
         if "attributes" in data and isinstance(data["attributes"], dict):
             raw = data["attributes"].get("message") or data["attributes"].get("log")
             if raw:
@@ -65,8 +64,8 @@ async def parse_endpoint(request: Request):
             raw = data.get("raw") or data.get("log") or data.get("message")
             if raw:
                 messages.append(raw.rstrip("\r\n"))
-    elif isinstance(body_bytes, (bytes, bytearray)):
-        # treat body as plain text
+    else:
+        # Treat body as plain text
         try:
             text = body_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
             if text:
@@ -91,41 +90,39 @@ async def parse_endpoint(request: Request):
             "errors": resp["errors"]
         })
 
-    # return array only if we had an array; otherwise return single object
     return JSONResponse(results if len(results) > 1 else results[0])
 
-@app.post("/parse/batch")
-async def parse_batch(payload: dict):
-    raws = payload.get("raws") or []
-    out = []
-    for raw in raws:
-        resp = parse_fix_message(raw, dict_obj=fix_dict)
-        flat = flatten(resp["parsed_by_tag"])
-        out.append({
-            "raw": resp["raw"].replace('\x01','|'),
-            "flat": flat,
-            "summary": human_summary(flat),
-            "detail": human_detail(resp["parsed_by_tag"]),
-            "errors": resp["errors"]
-        })
-    return JSONResponse(out)
 
-# Simple UI endpoint
 @app.get("/ui", response_class=HTMLResponse)
 async def ui_get():
-    html = open(os.path.join(os.path.dirname(__file__), "templates", "ui.html")).read()
+    template_path = os.path.join(os.path.dirname(__file__), "templates", "ui.html")
+    if os.path.isfile(template_path):
+        html = open(template_path, "r", encoding="utf-8").read()
+    else:
+        html = "<html><body><h3>FIX Parser UI template not found</h3></body></html>"
     return HTMLResponse(html)
+
 
 @app.post("/ui", response_class=HTMLResponse)
 async def ui_post(request: Request):
     form = await request.form()
     raw = form.get("raw") or ""
-    resp = parse_fix_message(raw, dict_obj=fix_dict)
+    resp = parse_fix_message(raw.replace("|", "\x01"), dict_obj=fix_dict)
     flat = flatten(resp["parsed_by_tag"])
-    html_template = open(os.path.join(os.path.dirname(__file__), "templates", "ui.html")).read()
-    return HTMLResponse(html_template.replace("%%RAW%%", raw.replace("\x01","|")).replace("%%SUMMARY%%", human_summary(flat)).replace("%%DETAIL%%", human_detail(resp["parsed_by_tag"])).replace("%%JSON%%", str(flat)))
+    template_path = os.path.join(os.path.dirname(__file__), "templates", "ui.html")
+    if os.path.isfile(template_path):
+        html_template = open(template_path, "r", encoding="utf-8").read()
+    else:
+        html_template = "<html><body><pre>%%DETAIL%%</pre></body></html>"
+    return HTMLResponse(
+        html_template
+        .replace("%%RAW%%", html.escape(raw.replace("\x01", "|")))
+        .replace("%%SUMMARY%%", html.escape(human_summary(flat)))
+        .replace("%%DETAIL%%", html.escape(human_detail(resp["parsed_by_tag"])))
+        .replace("%%JSON%%", html.escape(json.dumps(flat, indent=2)))
+    )
 
-# root
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return HTMLResponse("<h3>FIX Parser Demo</h3><p>Go to <a href='/ui'>/ui</a></p>")
