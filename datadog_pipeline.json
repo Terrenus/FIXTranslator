@@ -1,0 +1,27 @@
+{
+  "processors": [
+    {
+      "type": "json",
+      "name": "parse_fix_json_attributes",
+      "source": "attributes",
+      "target": "fix",
+      "normalize": true
+    },
+    {
+      "type": "grok-parser",
+      "name": "map_symbol_to_tag",
+      "grok": {
+        "support_rules": [],
+        "rule": "%{DATA:fix.Symbol}"
+      },
+      "is_enabled": true
+    },
+    {
+      "type": "attribute-remapper",
+      "name": "remap_fix_to_tags",
+      "from": "fix.Symbol",
+      "to": "fix.symbol",
+      "is_enabled": true
+    }
+  ]
+}

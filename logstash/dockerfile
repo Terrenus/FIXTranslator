@@ -1,0 +1,3 @@
+FROM docker.elastic.co/logstash/logstash:8.8.0
+RUN logstash-plugin install logstash-filter-http
+COPY pipeline.conf /usr/share/logstash/pipeline/pipeline.conf

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fixparser"
+version = "0.1.0"
+description = "FIXTranslator with integration to Splunk, Datadog, CloudWatch, Logstash & FluentBit"
+authors = [{name="Franco Manna", email="manna.franco@gmail.com"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "lxml",
+  "requests",
+  "boto3",
+  "jinja2",
+]

@@ -1,0 +1,46 @@
+services:
+  fixparser:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: fixparser-demo:local
+    ports:
+      - "9000:9000"
+    volumes:
+      - ../fixparser/dicts:/app/fixparser/dicts:ro
+      - ../sample_fix_messages.txt:/app/sample_fix_messages.txt:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  logstash:
+    build:
+      context: ../logstash
+      dockerfile: Dockerfile
+    volumes:
+      - ../logstash/pipeline.conf:/usr/share/logstash/pipeline/pipeline.conf:ro
+      - ../sample_fix_messages.txt:/usr/share/logstash/sample_fix_messages.txt:ro
+    depends_on:
+      - fixparser
+    environment:
+      - LS_JAVA_OPTS=-Xmx256m -Xms256m
+
+  fluentbit:
+    image: fluent/fluent-bit:latest
+    volumes:
+      - ../fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ../fluentbit/wrap_raw.lua:/fluent-bit/etc/wrap_raw.lua:ro
+      - ../sample_fix_messages.txt:/data/sample_fix_messages.txt:ro
+    depends_on:
+      - fixparser
+  localstack:
+    image: localstack/localstack:latest
+    environment:
+      - SERVICES=logs
+      - DEBUG=1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/tmp/localstack
+
+volumes:
+  localstack_data:
