@@ -1,5 +1,6 @@
 import os
 import json
+import html
 import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -115,10 +116,10 @@ async def ui_post(request: Request):
         html_template = "<html><body><pre>%%DETAIL%%</pre></body></html>"
     return HTMLResponse(
         html_template
-        .replace("%%RAW%%", raw.replace("\x01", "|"))
-        .replace("%%SUMMARY%%", human_summary(flat))
-        .replace("%%DETAIL%%", human_detail(resp["parsed_by_tag"]))
-        .replace("%%JSON%%", json.dumps(flat, indent=2))
+        .replace("%%RAW%%", html.escape(raw.replace("\x01", "|")))
+        .replace("%%SUMMARY%%", html.escape(human_summary(flat)))
+        .replace("%%DETAIL%%", html.escape(human_detail(resp["parsed_by_tag"])))
+        .replace("%%JSON%%", html.escape(json.dumps(flat, indent=2)))
     )
 
 
