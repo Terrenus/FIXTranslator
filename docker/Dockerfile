@@ -10,7 +10,7 @@ RUN python -m build -w -o /dist
 
 # Stage 2: runtime image
 FROM python:3.11-slim
-LABEL org.opencontainers.image.source="https://github.com/Terrenus/FIXTranslator"
+LABEL org.opencontainers.image.source="https://github.com/Terrenus/fixtranslator"
 WORKDIR /app
 # create non-root user
 RUN useradd --create-home appuser && mkdir /app/data && chown appuser:appuser /app/data
