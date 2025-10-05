@@ -3,6 +3,7 @@
 [![Build Status](https://github.com/Terrenus/FIXTranslator/actions/workflows/ci.yml/badge.svg)](https://github.com/Terrenus/FIXTranslator/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Terrenus/FIXTranslator)](https://github.com/Terrenus/FIXTranslator/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
+[![PyPi](https://img.shields.io/pypi/v/fixtranslator)](https://pypi.org/project/fixtranslator)
 
 FIXTranslator parses FIX (Financial Information eXchange) protocol logs (4.x and 5.x / FIXT) into structured JSON and human-readable output, and forwards parsed events to common logging platforms (Splunk, Datadog, CloudWatch, ELK). It preserves the original raw FIX and provides connectors, example pipelines and a small web UI for side-by-side raw vs translated view.
 
