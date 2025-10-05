@@ -6,14 +6,42 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 jobs:
-  build-and-publish:
+  release:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip build twine setuptools_scm
+
+      - name: Build sdist & wheel
+        run: |
+          python -m build
+
+      - name: Show built version
+        run: |
+          python -c "import fixparser; print('built version:', fixparser.__version__)"
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m twine upload dist/*
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -31,17 +59,12 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/fixtranslator:latest
             ghcr.io/${{ github.repository_owner }}/fixtranslator:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/fixtranslator:latest
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            # add any files you want attached to release (wheel, docs)
-      - name: Upload release assets (optional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: fixtranslator-${{ github.ref_name }}
-          path: |
-            # build artifacts if any
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
