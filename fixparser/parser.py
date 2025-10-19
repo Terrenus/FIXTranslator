@@ -1,12 +1,14 @@
 from lxml import etree
 from typing import Dict, Any
 import os
+import json
 
 SOH = "\x01"
 
 class FixDictionary:
     """
-    Loads QuickFIX-style XML dictionary files to map tag -> name and some metadata.
+    Loads QuickFIX-style XML dictionary files (and optionally JSON dicts)
+    to map tag -> name and some metadata.
     """
     def __init__(self):
         self.tags: Dict[str, Dict[str, Any]] = {}
@@ -27,6 +29,21 @@ class FixDictionary:
                 if enum:
                     record["enum"][enum] = desc
             self.tags[tag] = record
+
+    def load_json_dict(self, json_path: str):
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(json_path)
+        with open(json_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and "fields" in data:
+            fields = data["fields"]
+        else:
+            fields = data
+        for tag, meta in fields.items():
+            name = meta.get("name") or meta.get("label") or f"Tag{tag}"
+            ftype = meta.get("type")
+            enum = meta.get("enum", {})
+            self.tags[str(tag)] = {"name": name, "type": ftype, "enum": enum}
 
     def tag_name(self, tag: str) -> str:
         return self.tags.get(tag, {}).get("name", f"Tag{tag}")
