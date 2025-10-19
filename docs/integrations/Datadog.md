@@ -30,3 +30,39 @@ source:fixtranslator service:trading fix.symbol:"EUR/USD"
     - Use Datadog Live Tail to watch incoming FIX logs during demos.
 
     - Provide a saved view / dashboard showing common KPIs (messages per second, rejects, avg latency).
+
+---
+
+### Exporter Integration
+
+FIXTranslator can now automatically push parsed events to Datadog Logs API.
+
+**Environment Variables**
+
+| Variable | Description | Example |
+|-----------|-------------|----------|
+| `EXPORT_ENABLED` | Enable exporters | `true` |
+| `EXPORT_MODE` | `mock` or `live` | `live` |
+| `DATADOG_API_KEY` | Datadog key | `<YOUR_KEY>` |
+| `DATADOG_LOGS_URL` | Optional override | `https://http-intake.logs.datadoghq.com/v1/input` |
+
+**Mock Demo:**
+```bash
+EXPORT_ENABLED=true EXPORT_MODE=mock uvicorn fixparser.main:app --port 9000
+```
+
+**Live Mode:**
+
+```bash
+EXPORT_ENABLED=true EXPORT_MODE=live \
+DATADOG_API_KEY=<YOUR_KEY> \
+uvicorn fixparser.main:app --port 9000
+```
+
+Logs will appear in Datadog under the `fixparser` service tag.
+
+Try searching:
+
+```
+service:fixparser
+```

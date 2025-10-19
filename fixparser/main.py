@@ -4,14 +4,17 @@ import logging
 import time
 from fastapi import FastAPI, Request, UploadFile, File, Form, Response, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from typing import Optional, List
-
+from typing import Optional
+from .exporters import EXPORT_ENABLED, export_event
 from .parser import FixDictionary, parse_fix_message, flatten, human_summary, human_detail
-
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 app = FastAPI(title="FIX Parser Demo")
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+)
 logger = logging.getLogger("fixparser")
 logger.setLevel(logging.INFO)
 
@@ -153,6 +156,13 @@ async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
                 "detail": human_detail(resp["parsed_by_tag"]),
                 "errors": resp["errors"]
             })
+            if EXPORT_ENABLED:
+                export_event({
+                    "summary": human_summary(flat),
+                    "flat": flat,
+                    "raw": raw_norm.replace("\x01", "|"),
+                    "errors": resp["errors"],
+                })
             PARSES_TOTAL.inc()
             if resp.get("errors"):
                 PARSE_ERRORS.inc(len(resp.get("errors", [])))
@@ -226,6 +236,13 @@ async def parse_batch(request: Request, dict_name: Optional[str] = None):
                 "detail": human_detail(resp["parsed_by_tag"]),
                 "errors": resp["errors"]
             })
+            if EXPORT_ENABLED:
+                export_event({
+                    "summary": human_summary(flat),
+                    "flat": flat,
+                    "raw": raw_norm.replace("\x01", "|"),
+                    "errors": resp["errors"],
+                })
             PARSES_TOTAL.inc()
             if resp.get("errors"):
                 PARSE_ERRORS.inc(len(resp.get("errors", [])))

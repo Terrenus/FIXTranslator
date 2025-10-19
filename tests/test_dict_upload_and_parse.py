@@ -1,6 +1,4 @@
 import os
-import tempfile
-import shutil
 from fastapi.testclient import TestClient
 from fixparser.main import app, DICT_DIR
 

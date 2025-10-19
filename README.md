@@ -13,6 +13,9 @@ This repo contains:
 - `docker/` — Dockerfile + docker-compose for local demo (parser, logstash, fluentbit, localstack)
 - `docs/integrations/` — how-to guides for Splunk, Datadog, AWS, etc.
 - CI / release workflows in `.github/workflows/`
+- Integrated exporter layer for Splunk, Datadog, and AWS CloudWatch
+- Custom FIX dictionary upload — supports proprietary or extended FIX tag definitions.
+- Batch parse endpoint — process multiple FIX messages in a single request for higher throughput.
 
 ---
 
@@ -60,11 +63,14 @@ docker compose -f docker/docker-compose.yml logs -f fixparser fluentbit logstash
 
 ## Endpoints
 
-- POST /parse — accepts single or batched messages (JSON or plain text); tolerant to keys raw, log, message and Fluent Bit batched arrays. Returns parsed JSON, flattened fields, summary, detail, and errors.
+- POST /parse — accepts single or batched messages (JSON or plain text); tolerant to keys raw, log, message and Fluent Bit batched arrays. Returns parsed JSON, flattened fields, summary, detail, and errors. Supports specified dictionary `?dict_name=custom_fix44`
 
 - POST /parse/batch — optional batch endpoint (array input).
+Supports specified dictionary `?dict_name=custom_fix44`
 
 - GET /ui — minimal HTML UI for side-by-side raw & translated display.
+
+- POST /upload_dict?name=custom_fix44 — by passing in curl `-F "file=@/path/to/custom_fix44.xml"`
 
 ## Example: curl the parser
 
@@ -114,6 +120,27 @@ Run tests:
 ```bash
 pytest -q
 ```
+
+## Exporter Integrations
+
+FIXTranslator can automatically forward parsed FIX logs to popular monitoring platforms:
+
+| Platform | Integration | Docs |
+|-----------|--------------|------|
+| Splunk HEC | Native HTTP Exporter | [docs/integrations/splunk.md](docs/integrations/splunk.md) |
+| Datadog Logs API | Direct JSON POST | [docs/integrations/datadog.md](docs/integrations/datadog.md) |
+| AWS CloudWatch | boto3 integration | [docs/integrations/aws.md](docs/integrations/aws.md) |
+| Logstash & Fluent Bit | File / HTTP pipelines | [docs/integrations/logstash_fluentbit.md](docs/integrations/logstash_fluentbit.md) |
+
+Set these environment variables to activate exporters:
+
+```bash
+EXPORT_ENABLED=true
+EXPORT_MODE=mock   # or 'live' for production
+```
+
+Mock mode logs events locally for demo and testing,
+while live mode uses real API credentials for end-to-end streaming.
 
 ## Contributing & Code of Conduct
 
