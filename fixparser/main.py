@@ -2,8 +2,10 @@ import os
 import json
 import html
 import logging
-from fastapi import FastAPI, Request
+import time
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 from .parser import FixDictionary, parse_fix_message, flatten, human_summary, human_detail
 
@@ -11,6 +13,11 @@ app = FastAPI(title="FIX Parser Demo")
 
 logger = logging.getLogger("fixparser")
 logger.setLevel(logging.INFO)
+
+PARSES_TOTAL = Counter("fixparser_parses_total", "Total number of FIX parse attempts")
+PARSE_ERRORS = Counter("fixparser_parse_errors_total", "Total number of FIX parse errors")
+PARSE_LATENCY = Histogram("fixparser_parse_latency_seconds", "Histogram of FIX parse latencies")
+IN_FLIGHT = Gauge("fixparser_inflight_requests", "Number of in-flight parse requests")
 
 # Load dictionaries from dicts/ (if any)
 DICT_DIR = os.path.join(os.path.dirname(__file__), "dicts")
@@ -78,17 +85,31 @@ async def parse_endpoint(request: Request):
 
     results = []
     for raw in messages:
-        raw_norm = raw.replace("|", "\x01")
-        resp = parse_fix_message(raw_norm, dict_obj=fix_dict)
-        flat = flatten(resp["parsed_by_tag"])
-        results.append({
-            "raw": raw_norm.replace("\x01", "|"),
-            "parsed": resp["parsed_by_tag"],
-            "flat": flat,
-            "summary": human_summary(flat),
-            "detail": human_detail(resp["parsed_by_tag"]),
-            "errors": resp["errors"]
-        })
+        IN_FLIGHT.inc()
+        start = time.time()
+        try:
+            raw_norm = raw.replace("|", "\x01")
+            resp = parse_fix_message(raw_norm, dict_obj=fix_dict)
+            flat = flatten(resp["parsed_by_tag"])
+            results.append({
+                "raw": raw_norm.replace("\x01", "|"),
+                "parsed": resp["parsed_by_tag"],
+                "flat": flat,
+                "summary": human_summary(flat),
+                "detail": human_detail(resp["parsed_by_tag"]),
+                "errors": resp["errors"]
+            })
+            PARSES_TOTAL.inc()
+            if resp.get("errors"):
+                PARSE_ERRORS.inc(len(resp.get("errors", [])))
+        except Exception as e:
+            PARSE_ERRORS.inc()
+            logger.exception("parse error")
+            results.append({"raw": raw, "error": str(e)})
+        finally:
+            elapsed = time.time() - start
+            PARSE_LATENCY.observe(elapsed)
+            IN_FLIGHT.dec()
 
     return JSONResponse(results if len(results) > 1 else results[0])
 
@@ -121,6 +142,12 @@ async def ui_post(request: Request):
         .replace("%%DETAIL%%", html.escape(human_detail(resp["parsed_by_tag"])))
         .replace("%%JSON%%", html.escape(json.dumps(flat, indent=2)))
     )
+
+@app.get("/metrics")
+async def metrics():
+    # return prometheus metrics text
+    data = generate_latest()
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/", response_class=HTMLResponse)
