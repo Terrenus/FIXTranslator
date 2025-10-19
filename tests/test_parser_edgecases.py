@@ -20,6 +20,4 @@ def test_repeated_tags():
     # repeated tags should result in last value or list depending on flatten semantics
     msg = "8=FIX.4.4|35=D|55=EUR/USD|55=GBP/USD|10=000|"
     r = parser.parse_fix_message(msg)
-    flat = parser.flatten(r["parsed_by_tag"])
-    # flatten() currently keeps last or combines into list; just assert both values exist in parsed_by_tag
     assert "55" in r["parsed_by_tag"]
