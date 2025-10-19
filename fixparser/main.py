@@ -57,9 +57,15 @@ async def upload_dict(file: UploadFile = File(...), name: Optional[str] = Form(N
     if not (filename.lower().endswith(".xml") or filename.lower().endswith(".json")):
         raise HTTPException(status_code=400, detail="unsupported file type (only .xml and .json allowed)")
     save_path = os.path.join(DICT_DIR, filename)
+    # Normalize path and ensure it stays within DICT_DIR
+    norm_save_path = os.path.abspath(os.path.normpath(save_path))
+    dict_dir_abs = os.path.abspath(DICT_DIR)
+    if not norm_save_path.startswith(dict_dir_abs + os.sep):
+        logger.warning("Attempted path traversal in filename: %r", filename)
+        raise HTTPException(status_code=400, detail="invalid filename or path")
     contents = await file.read()
     try:
-        with open(save_path, "wb") as fh:
+        with open(norm_save_path, "wb") as fh:
             fh.write(contents)
     except Exception as e:
         logger.exception("Failed to save dict")
@@ -69,13 +75,13 @@ async def upload_dict(file: UploadFile = File(...), name: Optional[str] = Form(N
     try:
         d = FixDictionary()
         if filename.lower().endswith(".xml"):
-            d.load_quickfix_xml(save_path)
+            d.load_quickfix_xml(norm_save_path)
         else:
-            d.load_json_dict(save_path)
+            d.load_json_dict(norm_save_path)
     except Exception as e:
         # cleanup invalid file
         try:
-            os.remove(save_path)
+            os.remove(norm_save_path)
         except Exception:
             pass
         logger.exception("Dictionary validation failed")
