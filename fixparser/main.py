@@ -135,10 +135,19 @@ async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
 
     dict_obj = None
     if dict_name:
+        # Securely construct the dictionary path and prevent directory traversal
         dict_path = os.path.join(DICT_DIR, dict_name)
-        if not os.path.exists(dict_path):
+        dict_path_norm = os.path.abspath(os.path.normpath(dict_path))
+        dict_dir_norm = os.path.abspath(DICT_DIR)
+        if not dict_path_norm.startswith(dict_dir_norm + os.sep):
+            raise HTTPException(status_code=403, detail="invalid dictionary path")
+        if not os.path.exists(dict_path_norm):
             raise HTTPException(status_code=404, detail="dictionary not found")
         dict_obj = FixDictionary()
+        if dict_name.lower().endswith(".xml"):
+            dict_obj.load_quickfix_xml(dict_path_norm)
+        else:
+            dict_obj.load_json_dict(dict_path_norm)
         if dict_name.lower().endswith(".xml"):
             dict_obj.load_quickfix_xml(dict_path)
         else:
