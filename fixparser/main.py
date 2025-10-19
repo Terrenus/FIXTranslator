@@ -149,9 +149,9 @@ async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
         else:
             dict_obj.load_json_dict(dict_path_norm)
         if dict_name.lower().endswith(".xml"):
-            dict_obj.load_quickfix_xml(dict_path)
+            dict_obj.load_quickfix_xml(dict_path_norm)
         else:
-            dict_obj.load_json_dict(dict_path)
+            dict_obj.load_json_dict(dict_path_norm)
     else:
         dict_obj = global_default_dict
 
