@@ -225,13 +225,18 @@ async def parse_batch(request: Request, dict_name: Optional[str] = None):
     dict_obj = None
     if dict_name:
         dict_path = os.path.join(DICT_DIR, dict_name)
-        if not os.path.exists(dict_path):
+        # Normalize the resolved path and check it's within DICT_DIR
+        dict_path_abs = os.path.abspath(dict_path)
+        dict_dir_abs = os.path.abspath(DICT_DIR)
+        if not dict_path_abs.startswith(dict_dir_abs + os.sep):
+            return JSONResponse({"error": "Invalid dictionary name"}, status_code=400)
+        if not os.path.exists(dict_path_abs):
             raise HTTPException(status_code=404, detail="dictionary not found")
         dict_obj = FixDictionary()
         if dict_name.lower().endswith(".xml"):
-            dict_obj.load_quickfix_xml(dict_path)
+            dict_obj.load_quickfix_xml(dict_path_abs)
         else:
-            dict_obj.load_json_dict(dict_path)
+            dict_obj.load_json_dict(dict_path_abs)
     else:
         dict_obj = global_default_dict
 
