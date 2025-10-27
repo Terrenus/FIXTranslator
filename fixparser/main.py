@@ -1,38 +1,93 @@
 import os
 import json
-import html
 import logging
-from fastapi import FastAPI, Request
+import time
+from pathlib import Path
+from fastapi import FastAPI, Request, UploadFile, File, Form, Response, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-
+from typing import Optional
+from .exporters import EXPORT_ENABLED, export_event
 from .parser import FixDictionary, parse_fix_message, flatten, human_summary, human_detail
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 app = FastAPI(title="FIX Parser Demo")
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+)
 logger = logging.getLogger("fixparser")
 logger.setLevel(logging.INFO)
 
-# Load dictionaries from dicts/ (if any)
-DICT_DIR = os.path.join(os.path.dirname(__file__), "dicts")
-fix_dict = FixDictionary()
-if os.path.isdir(DICT_DIR):
-    for fname in os.listdir(DICT_DIR):
+PARSES_TOTAL = Counter("fixparser_parses_total", "Total number of FIX parse attempts")
+PARSE_ERRORS = Counter("fixparser_parse_errors_total", "Total number of FIX parse errors")
+PARSE_LATENCY = Histogram("fixparser_parse_latency_seconds", "Histogram of FIX parse latencies")
+IN_FLIGHT = Gauge("fixparser_inflight_requests", "Number of in-flight parse requests")
+
+# Config: dictionary directory (can be overridden with env var for tests)
+DICT_DIR = Path(os.environ.get("FIXPARSER_DICT_DIR", Path(__file__).parent / "dicts"))
+DICT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Load any dictionaries present at startup into a global if desired (not required)
+global_default_dict = FixDictionary()
+# Try to load known dicts but don't fail startup
+for fname in os.listdir(DICT_DIR) if os.path.isdir(DICT_DIR) else []:
+    fpath = os.path.join(DICT_DIR, fname)
+    try:
         if fname.lower().endswith(".xml"):
-            try:
-                fix_dict.load_quickfix_xml(os.path.join(DICT_DIR, fname))
-                logger.info("Loaded dictionary: %s", fname)
-            except Exception as e:
-                logger.warning("dict load error %s: %s", fname, e)
+            global_default_dict.load_quickfix_xml(fpath)
+            logger.info("Loaded dictionary at startup: %s", fname)
+        elif fname.lower().endswith(".json"):
+            global_default_dict.load_json_dict(fpath)
+            logger.info("Loaded JSON dictionary at startup: %s", fname)
+    except Exception as e:
+        logger.warning("dict load error %s: %s", fname, e)
+
+
+@app.post("/upload_dict")
+async def upload_dict(file: UploadFile = File(...), name: Optional[str] = Form(None)):
+    """
+    Upload a dictionary file (QuickFIX XML or JSON).
+    - file: upload the XML/JSON file
+    - name: optional filename to save as (must end with .xml or .json)
+    Returns {"ok": True, "filename": "<saved>"}
+    """
+    if file is None or not file.filename:
+        raise HTTPException(status_code=400, detail="missing filename")
+    filename = file.filename
+
+    if not (filename.lower().endswith(".xml") or filename.lower().endswith(".json")):
+        raise HTTPException(status_code=400, detail="unsupported file type (only .xml and .json allowed)")
+
+    saved_path = DICT_DIR / filename
+
+    try:
+        with saved_path.open("wb") as f:
+            f.write(await file.read())
+
+        d = FixDictionary()
+        if filename.lower().endswith(".xml"):
+            d.load_quickfix_xml(saved_path, base_dir=DICT_DIR)
+        else:
+            d.load_json_dict(saved_path, base_dir=DICT_DIR)
+    except Exception as e:
+        try:
+            if saved_path.exists():
+                saved_path.unlink()
+        except Exception:
+            pass
+        logger.exception("Dictionary validation failed")
+        raise HTTPException(status_code=400, detail=f"dictionary validation failed: {e}")
+
+
+    return JSONResponse({"status": 200, "filename": filename})
 
 
 @app.post("/parse")
-async def parse_endpoint(request: Request):
+async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
     """
-    Accepts:
-      - JSON bodies like {"raw":"..."} OR {"log":"..."} OR {"message":"..."} or Datadog {"attributes": {...}}
-      - JSON arrays (Fluent Bit batches)
-      - Plain text POST with raw FIX in body
-    Returns parsed JSON (single object or array).
+    Parse a single message (or fallback to body text).
+    Accepts JSON or plain text. Optional query param ?dict_name=filename to use a specific dictionary.
     """
     body_bytes = await request.body()
     logger.info("Incoming /parse request: %d bytes", len(body_bytes))
@@ -46,26 +101,21 @@ async def parse_endpoint(request: Request):
     except Exception:
         data = None
 
-    if isinstance(data, list):
-        for entry in data:
-            if isinstance(entry, dict):
-                raw = entry.get("raw") or entry.get("log") or entry.get("message")
-                if raw:
-                    messages.append(raw.rstrip("\r\n"))
-            elif isinstance(entry, str):
-                messages.append(entry.rstrip("\r\n"))
-    elif isinstance(data, dict):
-        # datadog-like shape
-        if "attributes" in data and isinstance(data["attributes"], dict):
-            raw = data["attributes"].get("message") or data["attributes"].get("log")
+    if isinstance(data, dict):
+        raw = data.get("raw") or data.get("log") or data.get("message")
+        if raw:
+            messages.append(raw.rstrip("\r\n"))
+    elif isinstance(data, list):
+        # if list passed but user called /parse (single), treat first element
+        entry = data[0] if data else None
+        if isinstance(entry, dict):
+            raw = entry.get("raw") or entry.get("log") or entry.get("message")
             if raw:
                 messages.append(raw.rstrip("\r\n"))
-        else:
-            raw = data.get("raw") or data.get("log") or data.get("message")
-            if raw:
-                messages.append(raw.rstrip("\r\n"))
+        elif isinstance(entry, str):
+            messages.append(entry.rstrip("\r\n"))
     else:
-        # Treat body as plain text
+        # plain text
         try:
             text = body_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
             if text:
@@ -76,21 +126,155 @@ async def parse_endpoint(request: Request):
     if not messages:
         return JSONResponse({"error": "no raw message found in request"}, status_code=400)
 
+    dict_obj = None
+    if dict_name:
+        # Securely construct the dictionary path and prevent directory traversal
+        dict_path = os.path.join(DICT_DIR, dict_name)
+        dict_path_norm = os.path.abspath(os.path.normpath(dict_path))
+        dict_dir_norm = os.path.abspath(DICT_DIR)
+        if not dict_path_norm.startswith(dict_dir_norm + os.sep):
+            raise HTTPException(status_code=403, detail="invalid dictionary path")
+        if not os.path.exists(dict_path_norm):
+            raise HTTPException(status_code=404, detail="dictionary not found")
+        dict_obj = FixDictionary()
+        if dict_name.lower().endswith(".xml"):
+            dict_obj.load_quickfix_xml(dict_path_norm)
+        else:
+            dict_obj.load_json_dict(dict_path_norm)
+        if dict_name.lower().endswith(".xml"):
+            dict_obj.load_quickfix_xml(dict_path_norm)
+        else:
+            dict_obj.load_json_dict(dict_path_norm)
+    else:
+        dict_obj = global_default_dict
+
     results = []
     for raw in messages:
-        raw_norm = raw.replace("|", "\x01")
-        resp = parse_fix_message(raw_norm, dict_obj=fix_dict)
-        flat = flatten(resp["parsed_by_tag"])
-        results.append({
-            "raw": raw_norm.replace("\x01", "|"),
-            "parsed": resp["parsed_by_tag"],
-            "flat": flat,
-            "summary": human_summary(flat),
-            "detail": human_detail(resp["parsed_by_tag"]),
-            "errors": resp["errors"]
-        })
+        IN_FLIGHT.inc()
+        start = time.time()
+        try:
+            raw_norm = raw.replace("|", "\x01")
+            resp = parse_fix_message(raw_norm, dict_obj=dict_obj)
+            flat = flatten(resp["parsed_by_tag"])
+            results.append({
+                "raw": raw_norm.replace("\x01", "|"),
+                "parsed": resp["parsed_by_tag"],
+                "flat": flat,
+                "summary": human_summary(flat),
+                "detail": human_detail(resp["parsed_by_tag"]),
+                "errors": resp["errors"]
+            })
+            if EXPORT_ENABLED:
+                export_event({
+                    "summary": human_summary(flat),
+                    "flat": flat,
+                    "raw": raw_norm.replace("\x01", "|"),
+                    "errors": resp["errors"],
+                })
+            PARSES_TOTAL.inc()
+            if resp.get("errors"):
+                PARSE_ERRORS.inc(len(resp.get("errors", [])))
+        except Exception as e:
+            PARSE_ERRORS.inc()
+            logger.exception("parse error")
+            results.append({"raw": raw, "error": str(e)})
+        finally:
+            elapsed = time.time() - start
+            PARSE_LATENCY.observe(elapsed)
+            IN_FLIGHT.dec()
 
-    return JSONResponse(results if len(results) > 1 else results[0])
+    return JSONResponse(results[0] if len(results) == 1 else results)
+
+
+@app.post("/parse/batch")
+async def parse_batch(request: Request, dict_name: Optional[str] = None):
+    """
+    Accept an array payload (Fluent Bit style) or array of strings / objects:
+    - [{"raw": "..."} , {"raw": "..."}] or ["raw1","raw2"]
+    Optional dict_name query param to select uploaded dictionary file.
+    Returns array of parsed results.
+    """
+    body_bytes = await request.body()
+    try:
+        data = json.loads(body_bytes) if body_bytes else None
+    except Exception:
+        data = None
+
+    messages = []
+    if isinstance(data, list):
+        for entry in data:
+            if isinstance(entry, dict):
+                raw = entry.get("raw") or entry.get("log") or entry.get("message")
+                if raw:
+                    messages.append(raw.rstrip("\r\n"))
+            elif isinstance(entry, str):
+                messages.append(entry.rstrip("\r\n"))
+    else:
+        return JSONResponse({"error": "expected JSON array"}, status_code=400)
+
+    if not messages:
+        return JSONResponse({"error": "no messages found in batch"}, status_code=400)
+
+    dict_obj = None
+    if dict_name:
+        dict_path = os.path.join(DICT_DIR, dict_name)
+        # Normalize the resolved path and check it's within DICT_DIR
+        dict_path_abs = os.path.abspath(dict_path)
+        dict_dir_abs = os.path.abspath(DICT_DIR)
+        if not dict_path_abs.startswith(dict_dir_abs + os.sep):
+            return JSONResponse({"error": "Invalid dictionary name"}, status_code=400)
+        if not os.path.exists(dict_path_abs):
+            raise HTTPException(status_code=404, detail="dictionary not found")
+        dict_obj = FixDictionary()
+        if dict_name.lower().endswith(".xml"):
+            dict_obj.load_quickfix_xml(dict_path_abs)
+        else:
+            dict_obj.load_json_dict(dict_path_abs)
+    else:
+        dict_obj = global_default_dict
+
+    results = []
+    for raw in messages:
+        IN_FLIGHT.inc()
+        start = time.time()
+        try:
+            raw_norm = raw.replace("|", "\x01")
+            resp = parse_fix_message(raw_norm, dict_obj=dict_obj)
+            flat = flatten(resp["parsed_by_tag"])
+            results.append({
+                "raw": raw_norm.replace("\x01", "|"),
+                "parsed": resp["parsed_by_tag"],
+                "flat": flat,
+                "summary": human_summary(flat),
+                "detail": human_detail(resp["parsed_by_tag"]),
+                "errors": resp["errors"]
+            })
+            if EXPORT_ENABLED:
+                export_event({
+                    "summary": human_summary(flat),
+                    "flat": flat,
+                    "raw": raw_norm.replace("\x01", "|"),
+                    "errors": resp["errors"],
+                })
+            PARSES_TOTAL.inc()
+            if resp.get("errors"):
+                PARSE_ERRORS.inc(len(resp.get("errors", [])))
+        except Exception as e:
+            PARSE_ERRORS.inc()
+            logger.exception("parse error")
+            results.append({"raw": raw, "error": str(e)})
+        finally:
+            elapsed = time.time() - start
+            PARSE_LATENCY.observe(elapsed)
+            IN_FLIGHT.dec()
+
+    return JSONResponse(results)
+
+
+@app.get("/metrics")
+async def metrics():
+    data = generate_latest()
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/ui", response_class=HTMLResponse)
@@ -101,26 +285,6 @@ async def ui_get():
     else:
         html = "<html><body><h3>FIX Parser UI template not found</h3></body></html>"
     return HTMLResponse(html)
-
-
-@app.post("/ui", response_class=HTMLResponse)
-async def ui_post(request: Request):
-    form = await request.form()
-    raw = form.get("raw") or ""
-    resp = parse_fix_message(raw.replace("|", "\x01"), dict_obj=fix_dict)
-    flat = flatten(resp["parsed_by_tag"])
-    template_path = os.path.join(os.path.dirname(__file__), "templates", "ui.html")
-    if os.path.isfile(template_path):
-        html_template = open(template_path, "r", encoding="utf-8").read()
-    else:
-        html_template = "<html><body><pre>%%DETAIL%%</pre></body></html>"
-    return HTMLResponse(
-        html_template
-        .replace("%%RAW%%", html.escape(raw.replace("\x01", "|")))
-        .replace("%%SUMMARY%%", html.escape(human_summary(flat)))
-        .replace("%%DETAIL%%", html.escape(human_detail(resp["parsed_by_tag"])))
-        .replace("%%JSON%%", html.escape(json.dumps(flat, indent=2)))
-    )
 
 
 @app.get("/", response_class=HTMLResponse)

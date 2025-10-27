@@ -52,3 +52,40 @@ Tips:
 - For low-latency environments prefer in-cluster transform (Lambda or Kinesis).
 
 - Ensure proper IAM permissions for Lambda/Firehose.
+
+---
+
+### Exporter Integration
+
+You can now stream FIXTranslator events directly to CloudWatch Logs.
+
+**Environment Variables**
+
+| Variable | Description | Example |
+|-----------|-------------|----------|
+| `EXPORT_ENABLED` | Enable exporters | `true` |
+| `EXPORT_MODE` | `mock` or `live` | `live` |
+| `CW_LOG_GROUP` | CloudWatch log group | `fixparser-demo` |
+| `CW_LOG_STREAM` | Stream name | `fixparser` |
+| `AWS_REGION` | Region | `us-east-1` |
+
+**Example:**
+```bash
+EXPORT_ENABLED=true EXPORT_MODE=live \
+CW_LOG_GROUP=fixparser-demo \
+CW_LOG_STREAM=fixparser \
+AWS_REGION=us-east-1 \
+uvicorn fixparser.main:app --port 9000
+```
+
+**Verify:**
+
+```bash
+aws logs get-log-events --log-group-name fixparser-demo --log-stream-name fixparser
+```
+
+To test locally without AWS:
+
+```bash
+EXPORT_ENABLED=true EXPORT_MODE=mock uvicorn fixparser.main:app
+```
