@@ -1,9 +1,28 @@
-from lxml import etree
+from defusedxml import ElementTree as DefusedET
 from typing import Dict, Any
-import os
+from pathlib import Path
+from typing import Union
 import json
 
 SOH = "\x01"
+
+class UnsafePathError(ValueError):
+    pass
+
+def safe_join_and_resolve(base_dir: Union[str, Path], user_path: Union[str, Path]) -> Path:
+    base = Path(base_dir).resolve()
+    user_path_obj = Path(user_path)
+
+    if user_path_obj.is_absolute():
+        candidate = user_path_obj.resolve()
+    else:
+        candidate = (base / user_path_obj).resolve()
+
+    try:
+        candidate.relative_to(base)
+    except Exception:
+        raise UnsafePathError(f"requested path {user_path!r} escapes base directory")
+    return candidate
 
 class FixDictionary:
     """
@@ -12,11 +31,18 @@ class FixDictionary:
     """
     def __init__(self):
         self.tags: Dict[str, Dict[str, Any]] = {}
-
-    def load_quickfix_xml(self, xml_path: str):
-        if not os.path.exists(xml_path):
-            raise FileNotFoundError(xml_path)
-        tree = etree.parse(xml_path)
+    
+    def load_quickfix_xml(self, xml_path: Union[str, Path], base_dir: Union[str, Path] = "dicts"):
+        base_dir = Path(base_dir)  # or wherever your dictionaries are stored
+        xml_path = Path(xml_path)
+        if not xml_path.is_absolute():
+            candidate = (base_dir / xml_path.name).resolve()
+        else:
+            candidate = xml_path.resolve()
+        candidate = safe_join_and_resolve(base_dir, candidate)
+        if not candidate.exists():
+            raise FileNotFoundError(str(candidate))
+        tree = DefusedET.parse(str(candidate))
         root = tree.getroot()
         for field in root.findall(".//fields/field"):
             name = field.get("name")
@@ -30,9 +56,16 @@ class FixDictionary:
                     record["enum"][enum] = desc
             self.tags[tag] = record
 
-    def load_json_dict(self, json_path: str):
-        if not os.path.exists(json_path):
-            raise FileNotFoundError(json_path)
+    def load_json_dict(self, json_path: Union[str, Path], base_dir: Union[str, Path] = "dicts"):
+        base_dir = Path(base_dir)
+        json_path = Path(json_path)
+        if not json_path.is_absolute():
+            candidate = (base_dir / json_path.name).resolve()
+        else:
+            candidate = json_path.resolve()
+        candidate = safe_join_and_resolve(base_dir, candidate)
+        if not candidate.exists():
+            raise FileNotFoundError(str(candidate))
         with open(json_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         if isinstance(data, dict) and "fields" in data:

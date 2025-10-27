@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import time
+from pathlib import Path
 from fastapi import FastAPI, Request, UploadFile, File, Form, Response, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from typing import Optional
@@ -24,8 +25,8 @@ PARSE_LATENCY = Histogram("fixparser_parse_latency_seconds", "Histogram of FIX p
 IN_FLIGHT = Gauge("fixparser_inflight_requests", "Number of in-flight parse requests")
 
 # Config: dictionary directory (can be overridden with env var for tests)
-DICT_DIR = os.environ.get("FIXPARSER_DICT_DIR", os.path.join(os.path.dirname(__file__), "dicts"))
-os.makedirs(DICT_DIR, exist_ok=True)
+DICT_DIR = Path(os.environ.get("FIXPARSER_DICT_DIR", Path(__file__).parent / "dicts"))
+DICT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load any dictionaries present at startup into a global if desired (not required)
 global_default_dict = FixDictionary()
@@ -51,43 +52,35 @@ async def upload_dict(file: UploadFile = File(...), name: Optional[str] = Form(N
     - name: optional filename to save as (must end with .xml or .json)
     Returns {"ok": True, "filename": "<saved>"}
     """
-    filename = name or file.filename
-    if not filename:
+    if file is None or not file.filename:
         raise HTTPException(status_code=400, detail="missing filename")
+    filename = file.filename
+
     if not (filename.lower().endswith(".xml") or filename.lower().endswith(".json")):
         raise HTTPException(status_code=400, detail="unsupported file type (only .xml and .json allowed)")
-    save_path = os.path.join(DICT_DIR, filename)
-    # Normalize path and ensure it stays within DICT_DIR
-    norm_save_path = os.path.abspath(os.path.normpath(save_path))
-    dict_dir_abs = os.path.abspath(DICT_DIR)
-    if not norm_save_path.startswith(dict_dir_abs + os.sep):
-        logger.warning("Attempted path traversal in filename: %r", filename)
-        raise HTTPException(status_code=400, detail="invalid filename or path")
-    contents = await file.read()
-    try:
-        with open(norm_save_path, "wb") as fh:
-            fh.write(contents)
-    except Exception as e:
-        logger.exception("Failed to save dict")
-        raise HTTPException(status_code=500, detail=str(e))
 
-    # Validate by attempting to load
+    saved_path = DICT_DIR / filename
+
     try:
+        with saved_path.open("wb") as f:
+            f.write(await file.read())
+
         d = FixDictionary()
         if filename.lower().endswith(".xml"):
-            d.load_quickfix_xml(norm_save_path)
+            d.load_quickfix_xml(saved_path, base_dir=DICT_DIR)
         else:
-            d.load_json_dict(norm_save_path)
+            d.load_json_dict(saved_path, base_dir=DICT_DIR)
     except Exception as e:
-        # cleanup invalid file
         try:
-            os.remove(norm_save_path)
+            if saved_path.exists():
+                saved_path.unlink()
         except Exception:
             pass
         logger.exception("Dictionary validation failed")
         raise HTTPException(status_code=400, detail=f"dictionary validation failed: {e}")
 
-    return JSONResponse({"ok": True, "filename": filename})
+
+    return JSONResponse({"status": 200, "filename": filename})
 
 
 @app.post("/parse")

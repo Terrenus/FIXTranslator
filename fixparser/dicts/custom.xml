@@ -1,6 +1,0 @@
-<?xml version="1.0"?>
-<fix>
-  <fields>
-    <field number="9999" name="CustomTag" type="STRING"/>
-  </fields>
-</fix>

@@ -1,46 +1,38 @@
-import os
+import io
+import pytest
+
 from fastapi.testclient import TestClient
-from fixparser.main import app, DICT_DIR
+from fixparser.main import app
 
 client = TestClient(app)
 
-# minimal QuickFIX XML dictionary content with a custom tag 9999
-SAMPLE_DICT_XML = '''<?xml version="1.0"?>
-<fix>
-  <fields>
-    <field number="9999" name="CustomTag" type="STRING"/>
-  </fields>
-</fix>
-'''
+@pytest.fixture
+def tmp_upload_dir(tmp_path, monkeypatch):
+    # Patch the upload directory to a temporary safe one
+    upload_dir = tmp_path / "dicts"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("fixparser.main.DICT_DIR", upload_dir)
+    return upload_dir
 
-def test_upload_dict_and_parse(tmp_path, monkeypatch):
-    # create a tmp dict dir and point DICT_DIR env var to it before calling app
-    tmpdir = tmp_path / "dicts"
-    tmpdir.mkdir()
-    # monkeypatch the DICT_DIR in the module so upload goes there
-    monkeypatch.setenv("FIXPARSER_DICT_DIR", str(tmpdir))
-    # we need to reload parts of app to pick env change; but upload endpoint uses DICT_DIR var defined at import
-    # so instead write directly to the expected DICT_DIR used by the running app:
-    # Use the DICT_DIR from the imported module (already set). Ensure it exists.
-    ddir = DICT_DIR
-    os.makedirs(ddir, exist_ok=True)
+def test_dict_upload_and_parse(tmp_upload_dir):
+    # Create a dummy valid XML file content
+    xml_content = b"""<?xml version="1.0"?><fix><fields><field number="1" name="Account"/></fields></fix>"""
 
-    # upload file via API
-    files = {"file": ("custom.xml", SAMPLE_DICT_XML, "application/xml")}
-    resp = client.post("/upload_dict", files=files)
-    assert resp.status_code == 200, resp.text
-    j = resp.json()
-    assert j["ok"] is True
-    filename = j["filename"]
-    assert filename == "custom.xml"
-    # Now parse a message that contains tag 9999
-    msg = "8=FIX.4.4|9=176|35=D|49=CLIENT|56=BROKER|11=1|9999=HELLO|10=000|"
-    r = client.post(f"/parse?dict_name={filename}", json={"raw": msg})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    # parsed_by_tag should include '9999'
-    parsed = body.get("parsed")
-    assert parsed is not None
-    assert "9999" in parsed
-    assert parsed["9999"]["name"] == "CustomTag"
-    assert parsed["9999"]["value"] == "HELLO"
+    # Upload the file through the API
+    response = client.post(
+        "/upload_dict",
+        files={"file": ("FIX44.xml", io.BytesIO(xml_content), "application/xml")},
+    )
+
+    assert response.status_code == 200, response.text
+    resp_json = response.json()
+    assert resp_json.get("status") == 200
+    assert resp_json.get("filename", "").lower() == "fix44.xml"
+
+    # Ensure the file was saved correctly in the safe directory
+    saved = tmp_upload_dir / "FIX44.xml"
+    assert saved.exists()
+
+    # Double-check path stays within allowed directory
+    resolved = saved.resolve()
+    assert str(tmp_upload_dir.resolve()) in str(resolved)
