@@ -3,14 +3,20 @@ import json
 import logging
 import time
 from pathlib import Path
-from fastapi import FastAPI, Request, UploadFile, File, Form, Response, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, Form, Response, HTTPException, Security, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
-from typing import Optional
+from fastapi.security.api_key import APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional, Annotated, Literal
 from .exporters import EXPORT_ENABLED, export_event
 from .parser import FixDictionary, parse_fix_message, flatten, human_summary, human_detail
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import PlainTextResponse
 
 app = FastAPI(title="FIX Parser Demo")
+
+API_KEY_HEADER = APIKeyHeader(name="x-api-key", auto_error=False)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +29,68 @@ PARSES_TOTAL = Counter("fixparser_parses_total", "Total number of FIX parse atte
 PARSE_ERRORS = Counter("fixparser_parse_errors_total", "Total number of FIX parse errors")
 PARSE_LATENCY = Histogram("fixparser_parse_latency_seconds", "Histogram of FIX parse latencies")
 IN_FLIGHT = Gauge("fixparser_inflight_requests", "Number of in-flight parse requests")
+
+MAX_BODY_SIZE = 1 * 1024 * 1024 
+
+ALLOWED_ORIGINS = ["https://your-company.example"] if not os.getenv("DEV") else ["*"]
+
+class MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # read limited chunk to avoid reading entire huge bodies
+        body = await request.body()
+        if len(body) > MAX_BODY_SIZE:
+            return PlainTextResponse("Request body too large", status_code=413)
+        return await call_next(request)
+
+app.add_middleware(MaxBodySizeMiddleware)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+def _get_valid_api_keys() -> set:
+    keys = os.getenv("API_KEYS", "")
+    if not keys:
+        return set()
+    return {k.strip() for k in keys.split(",") if k.strip()}
+
+def require_api_key(api_key: Optional[str] = Depends(API_KEY_HEADER)) -> Optional[str]:
+    allowed = _get_valid_api_keys()
+    if allowed:
+        if not api_key or api_key not in allowed:
+            print("!!! FAILING: API Key is not in 'allowed'.")
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        # SUCCESS: Return the API key string
+        return api_key
+    
+    # Logic for when API keys are NOT configured (development/bypass)
+    if os.getenv("DISABLE_APIKEY_CHECK", "0") == "1":
+        print("!!! WARNING: API_KEYS empty but DISABLE_APIKEY_CHECK is set. Bypassing check.")
+        return None
+    
+    # Default secure fallback if no key is set and no bypass is active
+    print("!!! FAILING: 'allowed' variable is empty, and bypass is off. API key required.")
+    raise HTTPException(status_code=401, detail="API key required")
+
+def get_parse_mode(mode: Optional[str] = 'lenient') -> Literal['strict', 'lenient']:
+    """
+    Validates the 'mode' query parameter. Must be 'strict' or 'lenient'.
+    Defaults to 'lenient'.
+    """
+    if mode is None:
+        return 'lenient'
+    
+    mode_lower = mode.lower()
+    if mode_lower not in ('strict', 'lenient'):
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid mode. Must be 'strict' or 'lenient'."
+        )
+    return mode_lower
 
 # Config: dictionary directory (can be overridden with env var for tests)
 DICT_DIR = Path(os.environ.get("FIXPARSER_DICT_DIR", Path(__file__).parent / "dicts"))
@@ -43,6 +111,15 @@ for fname in os.listdir(DICT_DIR) if os.path.isdir(DICT_DIR) else []:
     except Exception as e:
         logger.warning("dict load error %s: %s", fname, e)
 
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return resp
 
 @app.post("/upload_dict")
 async def upload_dict(file: UploadFile = File(...), name: Optional[str] = Form(None)):
@@ -84,17 +161,28 @@ async def upload_dict(file: UploadFile = File(...), name: Optional[str] = Form(N
 
 
 @app.post("/parse")
-async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
+async def parse_endpoint(
+    request: Request, 
+    mode: Annotated[Literal['strict', 'lenient'], Depends(get_parse_mode)],
+    dict_name: Optional[str] = None, 
+    api_key: Annotated[Optional[str], Security(require_api_key)] = None
+    ):
     """
     Parse a single message (or fallback to body text).
     Accepts JSON or plain text. Optional query param ?dict_name=filename to use a specific dictionary.
     """
+    if not api_key and not os.getenv("DISABLE_APIKEY", False):
+        print("!!! FAILING: API_KEY is missing or empty and DISABLE_APIKEY is not set.")
+        raise HTTPException(status_code=401, detail="API key missing")
+    
+    is_strict = mode == 'strict'
+
     body_bytes = await request.body()
     logger.info("Incoming /parse request: %d bytes", len(body_bytes))
     messages = []
+    data = None
 
     # Try JSON decode
-    data = None
     try:
         if body_bytes:
             data = json.loads(body_bytes)
@@ -105,6 +193,8 @@ async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
         raw = data.get("raw") or data.get("log") or data.get("message")
         if raw:
             messages.append(raw.rstrip("\r\n"))
+        elif body_bytes:
+            return JSONResponse({"detail": [{"loc":["body", "raw"], "msg": "field required", "type":"value_error.missing"}]}, status_code=422)
     elif isinstance(data, list):
         # if list passed but user called /parse (single), treat first element
         entry = data[0] if data else None
@@ -153,8 +243,11 @@ async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
         IN_FLIGHT.inc()
         start = time.time()
         try:
-            raw_norm = raw.replace("|", "\x01")
-            resp = parse_fix_message(raw_norm, dict_obj=dict_obj)
+            if not is_strict:
+                raw_norm = raw.replace("|", "\x01")
+            else:
+                raw_norm = raw
+            resp = parse_fix_message(raw_norm, dict_obj=dict_obj, strict=is_strict)
             flat = flatten(resp["parsed_by_tag"])
             results.append({
                 "raw": raw_norm.replace("\x01", "|"),
@@ -174,10 +267,21 @@ async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
             PARSES_TOTAL.inc()
             if resp.get("errors"):
                 PARSE_ERRORS.inc(len(resp.get("errors", [])))
-        except Exception as e:
+        except ValueError as e: 
+            # Catch the ValueError raised by parse_fix_message for malformed input in strict mode
             PARSE_ERRORS.inc()
-            logger.exception("parse error")
-            results.append({"raw": raw, "error": str(e)})
+            error_message_for_client = "Parsing failed. The FIX message is malformed in strict mode."
+            logger.warning("Parser error: %s", str(e)) 
+            if not request.url.path.endswith("/batch"):
+                raise HTTPException(status_code=400, detail=error_message_for_client)
+            return JSONResponse({"raw": raw, "error": error_message_for_client}, status_code=400)
+        except Exception:
+            PARSE_ERRORS.inc()
+            generic_client_error = "An unexpected server error occurred during parsing."
+            logger.exception("Internal fatal parse error") # Use logger.exception to log traceback
+            if not request.url.path.endswith("/batch"):
+                raise HTTPException(status_code=500, detail=generic_client_error)
+            results.append({"raw": raw, "error": generic_client_error})
         finally:
             elapsed = time.time() - start
             PARSE_LATENCY.observe(elapsed)
@@ -187,20 +291,33 @@ async def parse_endpoint(request: Request, dict_name: Optional[str] = None):
 
 
 @app.post("/parse/batch")
-async def parse_batch(request: Request, dict_name: Optional[str] = None):
+async def parse_batch(
+    request: Request, 
+    mode: Annotated[Literal['strict', 'lenient'], Depends(get_parse_mode)], 
+    dict_name: Optional[str] = None,
+    api_key: Annotated[Optional[str], Security(require_api_key)] = None
+    ):
     """
     Accept an array payload (Fluent Bit style) or array of strings / objects:
     - [{"raw": "..."} , {"raw": "..."}] or ["raw1","raw2"]
     Optional dict_name query param to select uploaded dictionary file.
     Returns array of parsed results.
     """
+
+    if not api_key and not os.getenv("DISABLE_APIKEY", False):
+        raise HTTPException(status_code=401, detail="API key missing")
+    
+    is_strict = mode == 'strict'
+
     body_bytes = await request.body()
+    messages = []
+    data = None
+
     try:
         data = json.loads(body_bytes) if body_bytes else None
     except Exception:
         data = None
 
-    messages = []
     if isinstance(data, list):
         for entry in data:
             if isinstance(entry, dict):
@@ -238,8 +355,11 @@ async def parse_batch(request: Request, dict_name: Optional[str] = None):
         IN_FLIGHT.inc()
         start = time.time()
         try:
-            raw_norm = raw.replace("|", "\x01")
-            resp = parse_fix_message(raw_norm, dict_obj=dict_obj)
+            if not is_strict:
+                raw_norm = raw.replace("|", "\x01")
+            else:
+                raw_norm = raw
+            resp = parse_fix_message(raw_norm, dict_obj=dict_obj, strict=is_strict)
             flat = flatten(resp["parsed_by_tag"])
             results.append({
                 "raw": raw_norm.replace("\x01", "|"),
@@ -259,10 +379,21 @@ async def parse_batch(request: Request, dict_name: Optional[str] = None):
             PARSES_TOTAL.inc()
             if resp.get("errors"):
                 PARSE_ERRORS.inc(len(resp.get("errors", [])))
-        except Exception as e:
+        except ValueError as e:
+            # For batch, we just log the error and append a failure result, but keep processing the batch.
             PARSE_ERRORS.inc()
-            logger.exception("parse error")
-            results.append({"raw": raw, "error": str(e)})
+            error_message_for_client = "Parsing failed. The FIX message is malformed in strict mode."
+            logger.warning("Parser error: %s", str(e)) 
+            if not request.url.path.endswith("/batch"):
+                raise HTTPException(status_code=400, detail=error_message_for_client)
+            results.append({"raw": raw, "error": error_message_for_client, "status_code": 400})
+        except Exception:
+            PARSE_ERRORS.inc()
+            generic_client_error = "An unexpected server error occurred during parsing."
+            logger.exception("Internal fatal parse error") # Use logger.exception to log traceback
+            if not request.url.path.endswith("/batch"):
+                raise HTTPException(status_code=500, detail=generic_client_error)
+            results.append({"raw": raw, "error": generic_client_error})
         finally:
             elapsed = time.time() - start
             PARSE_LATENCY.observe(elapsed)
@@ -276,6 +407,19 @@ async def metrics():
     data = generate_latest()
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
+@app.get("/health/liveness")
+async def liveness():
+    return {"status": "alive"}
+
+@app.get("/health/readiness")
+async def readiness():
+    try:
+        sample = "8=FIX.4.2\x019=12\x0135=0\x0110=000\x01"
+        await parse_fix_message(sample, dict_obj=None, strict=False)
+        return {"status": "ready"}
+    except Exception as exc:
+        # return 503 so orchestration can detect and restart
+        raise HTTPException(status_code=503, detail=f"parser check failed: {exc}")
 
 @app.get("/ui", response_class=HTMLResponse)
 async def ui_get():
