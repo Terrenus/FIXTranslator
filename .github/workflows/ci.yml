@@ -56,7 +56,7 @@ jobs:
           bandit -r fixparser -ll || true
 
       - name: Run pip-audit
-        run: pip-audit --progress spinner
+        run: pip-audit --progress on
 
   build-dist:
     name: Build distribution (wheel/sdist)
