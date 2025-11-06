@@ -62,7 +62,7 @@ def require_api_key(api_key: Optional[str] = Depends(API_KEY_HEADER)) -> Optiona
     allowed = _get_valid_api_keys()
     if allowed:
         if not api_key or api_key not in allowed:
-            print(f"!!! FAILING: Key '{api_key}' is not in 'allowed'.")
+            print("!!! FAILING: API Key is not in 'allowed'.")
             raise HTTPException(status_code=401, detail="Invalid API key")
         # SUCCESS: Return the API key string
         return api_key
@@ -172,7 +172,7 @@ async def parse_endpoint(
     Accepts JSON or plain text. Optional query param ?dict_name=filename to use a specific dictionary.
     """
     if not api_key and not os.getenv("DISABLE_APIKEY", False):
-        print(f"!!! FAILING: API_KEY is {api_key} and DISABLE_APIKEY is not set.")
+        print("!!! FAILING: API_KEY is missing or empty and DISABLE_APIKEY is not set.")
         raise HTTPException(status_code=401, detail="API key missing")
     
     is_strict = mode == 'strict'
@@ -270,14 +270,18 @@ async def parse_endpoint(
         except ValueError as e: 
             # Catch the ValueError raised by parse_fix_message for malformed input in strict mode
             PARSE_ERRORS.inc()
-            logger.warning("strict parse error: %s", e)
+            error_message_for_client = f"Parsing failed (mode='strict'): {str(e)}"
+            logger.warning("Parser error: %s", str(e)) 
             if not request.url.path.endswith("/batch"):
-                raise HTTPException(status_code=400, detail=str(e))
-            return JSONResponse({"raw": raw, "error": str(e)}, status_code=400)
-        except Exception as e:
+                raise HTTPException(status_code=400, detail=error_message_for_client)
+            return JSONResponse({"raw": raw, "error": error_message_for_client}, status_code=400)
+        except Exception:
             PARSE_ERRORS.inc()
-            logger.exception("parse error")
-            results.append({"raw": raw, "error": str(e)})
+            generic_client_error = "An unexpected server error occurred during parsing."
+            logger.exception("Internal fatal parse error") # Use logger.exception to log traceback
+            if not request.url.path.endswith("/batch"):
+                raise HTTPException(status_code=500, detail=generic_client_error)
+            results.append({"raw": raw, "error": generic_client_error})
         finally:
             elapsed = time.time() - start
             PARSE_LATENCY.observe(elapsed)
@@ -378,14 +382,18 @@ async def parse_batch(
         except ValueError as e:
             # For batch, we just log the error and append a failure result, but keep processing the batch.
             PARSE_ERRORS.inc()
-            logger.warning("strict batch parse error: %s", e)
+            error_message_for_client = f"Parsing failed (mode='strict'): {str(e)}"
+            logger.warning("Parser error: %s", str(e)) 
             if not request.url.path.endswith("/batch"):
-                raise HTTPException(status_code=400, detail=str(e))
-            results.append({"raw": raw, "error": str(e), "status_code": 400})
-        except Exception as e:
+                raise HTTPException(status_code=400, detail=error_message_for_client)
+            results.append({"raw": raw, "error": error_message_for_client, "status_code": 400})
+        except Exception:
             PARSE_ERRORS.inc()
-            logger.exception("parse error")
-            results.append({"raw": raw, "error": str(e)})
+            generic_client_error = "An unexpected server error occurred during parsing."
+            logger.exception("Internal fatal parse error") # Use logger.exception to log traceback
+            if not request.url.path.endswith("/batch"):
+                raise HTTPException(status_code=500, detail=generic_client_error)
+            results.append({"raw": raw, "error": generic_client_error})
         finally:
             elapsed = time.time() - start
             PARSE_LATENCY.observe(elapsed)
