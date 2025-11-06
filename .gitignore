@@ -9,3 +9,6 @@ dist/
 .DS_Store
 *.log
 fixparser/_version.py
+.pytest_cache/
+.ruff_cache/
+.coverage

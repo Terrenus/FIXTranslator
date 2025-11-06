@@ -90,8 +90,13 @@ def normalize_separators(raw: str) -> str:
         return raw.replace('|', SOH)
     return raw
 
-def parse_fix_message(raw: str, dict_obj: FixDictionary = None) -> Dict[str, Any]:
-    raw = normalize_separators(raw)
+def parse_fix_message(raw: str, dict_obj: FixDictionary = None, strict: bool = False) -> Dict[str, Any]:
+    
+    if strict and SOH not in raw:
+         raise ValueError("FIX message is malformed in strict mode: Missing SOH delimiters.")
+    else:
+        raw = normalize_separators(raw)
+    
     parts = [p for p in raw.split(SOH) if p]
     parsed = {}
     errors = []
@@ -108,6 +113,10 @@ def parse_fix_message(raw: str, dict_obj: FixDictionary = None) -> Dict[str, Any
     for must in ["8", "9", "35", "10"]:
         if must not in parsed:
             errors.append(f"Missing required tag {must}")
+
+    if strict and errors:
+        # Raise an exception for malformed messages in strict mode
+        raise ValueError(f"FIX message is malformed in strict mode: {'; '.join(errors)}")
 
     return {"parsed_by_tag": parsed, "errors": errors, "raw": raw}
 

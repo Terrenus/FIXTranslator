@@ -1,11 +1,6 @@
 import io
 import pytest
 
-from fastapi.testclient import TestClient
-from fixparser.main import app
-
-client = TestClient(app)
-
 @pytest.fixture
 def tmp_upload_dir(tmp_path, monkeypatch):
     # Patch the upload directory to a temporary safe one
@@ -14,7 +9,7 @@ def tmp_upload_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("fixparser.main.DICT_DIR", upload_dir)
     return upload_dir
 
-def test_dict_upload_and_parse(tmp_upload_dir):
+def test_dict_upload_and_parse(tmp_upload_dir, client):
     # Create a dummy valid XML file content
     xml_content = b"""<?xml version="1.0"?><fix><fields><field number="1" name="Account"/></fields></fix>"""
 
