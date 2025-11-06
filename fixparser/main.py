@@ -270,7 +270,7 @@ async def parse_endpoint(
         except ValueError as e: 
             # Catch the ValueError raised by parse_fix_message for malformed input in strict mode
             PARSE_ERRORS.inc()
-            error_message_for_client = f"Parsing failed (mode='strict'): {str(e)}"
+            error_message_for_client = "Parsing failed. The FIX message is malformed in strict mode."
             logger.warning("Parser error: %s", str(e)) 
             if not request.url.path.endswith("/batch"):
                 raise HTTPException(status_code=400, detail=error_message_for_client)
@@ -382,7 +382,7 @@ async def parse_batch(
         except ValueError as e:
             # For batch, we just log the error and append a failure result, but keep processing the batch.
             PARSE_ERRORS.inc()
-            error_message_for_client = f"Parsing failed (mode='strict'): {str(e)}"
+            error_message_for_client = "Parsing failed. The FIX message is malformed in strict mode."
             logger.warning("Parser error: %s", str(e)) 
             if not request.url.path.endswith("/batch"):
                 raise HTTPException(status_code=400, detail=error_message_for_client)
