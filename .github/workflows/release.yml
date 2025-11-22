@@ -59,8 +59,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/fixtranslator:${{ github.ref_name }}
-            ghcr.io/${{ github.repository_owner }}/fixtranslator:latest
+            ghcr.io/${{ github.repository_owner@L }}/fixtranslator:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner@L }}/fixtranslator:latest
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1

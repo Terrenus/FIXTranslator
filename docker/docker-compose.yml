@@ -11,6 +11,7 @@ services:
       - ../sample_fix_messages.txt:/app/sample_fix_messages.txt:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - FIXPARSER_DICT_DIR=/app/fixparser/dicts
 
   logstash:
     build:
@@ -28,7 +29,6 @@ services:
     image: fluent/fluent-bit:latest
     volumes:
       - ../fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
-      - ../fluentbit/wrap_raw.lua:/fluent-bit/etc/wrap_raw.lua:ro
       - ../sample_fix_messages.txt:/data/sample_fix_messages.txt:ro
     depends_on:
       - fixparser

@@ -14,3 +14,4 @@ def test_parse_requires_api_key(monkeypatch, client):
     r3 = client.post("/parse", json={"raw": "8=FIX.4.2\x019=12\x0135=0\x0110=000\x01"},
                      headers={"x-api-key": "mykey"})
     assert r3.status_code != 401
+

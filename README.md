@@ -61,6 +61,29 @@ echo '8=FIX.4.4|9=176|35=D|49=CLIENT12|56=BROKER03|11=demo1|55=EUR/USD|54=1|38=1
 docker compose -f docker/docker-compose.yml logs -f fixparser fluentbit logstash
 ```
 
+## 🔒 API Authentication and Security
+
+### API Key Authentication
+
+All requests to the `/parse` and `/parse/batch` endpoints require an API key to be passed in the `X-API-Key` HTTP header.
+
+| Header | Example Value | Description |
+| :--- | :--- | :--- |
+| `X-API-Key` | `your_secret_api_key_123` | Your unique key, required for authorization and rate limiting. |
+
+### Rate Limiting
+
+Requests are rate-limited per API Key to ensure fair usage and service stability.
+
+| Tier | Limit | Exceeding Limit |
+| :--- | :--- | :--- |
+| **Basic (Default)** | **200 requests per minute** | Returns HTTP **429 Too Many Requests**. |
+| **Pro/Enterprise** | Contact for custom limits. | Limit is tied to your subscription level. |
+
+### Tracing and Support
+
+Every request is assigned a unique Request ID. If you encounter an internal error (HTTP 500), please provide your Request ID to our support team for faster resolution.
+
 ## Endpoints
 
 - POST /parse — accepts single or batched messages (JSON or plain text); tolerant to keys raw, log, message and Fluent Bit batched arrays. Returns parsed JSON, flattened fields, summary, detail, and errors. Supports specified dictionary `?dict_name=custom_fix44`

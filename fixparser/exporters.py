@@ -1,10 +1,10 @@
 import os
 import json
-import logging
 import requests
+import boto3
+import time
+from .logger_config import logger
 from prometheus_client import Counter
-
-logger = logging.getLogger("fixparser.exporters")
 
 EXPORT_MODE = os.getenv("EXPORT_MODE", "mock").lower()
 EXPORT_ENABLED = os.getenv("EXPORT_ENABLED", "false").lower() in ("true", "1", "yes")
@@ -13,13 +13,12 @@ EXPORT_ENABLED = os.getenv("EXPORT_ENABLED", "false").lower() in ("true", "1", "
 EXPORT_TOTAL = Counter("fixparser_export_total", "Total number of exporter send attempts", ["target"])
 EXPORT_ERRORS = Counter("fixparser_export_errors_total", "Exporter send failures", ["target"])
 
-def _log_event(prefix, event):
-    logger.info("[%s] %s", prefix, json.dumps(event, indent=2)[:300])
 
 def send_to_splunk(event: dict):
+    request_id = event.get("request_id", "N/A")
     EXPORT_TOTAL.labels("splunk").inc()
     if EXPORT_MODE == "mock":
-        _log_event("Exporter:Splunk MOCK", event)
+        logger.info("Exporting to Splunk", extra={"exporter": "splunk", "event": event, "request_id": request_id})
         return True
     try:
         url = os.getenv("SPLUNK_HEC_URL", "http://localhost:8088/services/collector")
@@ -31,13 +30,14 @@ def send_to_splunk(event: dict):
         return True
     except Exception as e:
         EXPORT_ERRORS.labels("splunk").inc()
-        logger.exception("Splunk exporter error: %s", e)
+        logger.exception("Splunk exporter error", extra={"exception_detail": str(e), "request_id": request_id})
         return False
 
 def send_to_datadog(event: dict):
+    request_id = event.get("request_id", "N/A")
     EXPORT_TOTAL.labels("datadog").inc()
     if EXPORT_MODE == "mock":
-        _log_event("Exporter:Datadog MOCK", event)
+        logger.info("Exporting to Datadog", extra={"exporter": "datadog", "event": event, "request_id": request_id})
         return True
     try:
         url = os.getenv("DATADOG_LOGS_URL", "https://http-intake.logs.datadoghq.com/v1/input")
@@ -49,36 +49,43 @@ def send_to_datadog(event: dict):
         return True
     except Exception as e:
         EXPORT_ERRORS.labels("datadog").inc()
-        logger.exception("Datadog exporter error: %s", e)
+        logger.exception("Datadog exporter error", extra={"exception_detail": str(e), "request_id": request_id})
         return False
 
 def send_to_cloudwatch(event: dict):
+    request_id = event.get("request_id", "N/A")
     EXPORT_TOTAL.labels("cloudwatch").inc()
     if EXPORT_MODE == "mock":
-        _log_event("Exporter:CloudWatch MOCK", event)
+        logger.info("Exporting to CloudWatch", extra={"exporter": "cloudwatch", "event": event, "request_id": request_id})
         return True
     try:
-        import boto3
         group = os.getenv("CW_LOG_GROUP", "fixparser-demo")
         stream = os.getenv("CW_LOG_STREAM", "fixparser")
+        
         logs = boto3.client("logs", region_name=os.getenv("AWS_REGION", "us-east-1"))
-        logs.create_log_group(logGroupName=group)
-        logs.create_log_stream(logGroupName=group, logStreamName=stream)
+        
+        timestamp_millis = int(time.time() * 1000)
+        
         logs.put_log_events(
             logGroupName=group,
             logStreamName=stream,
-            logEvents=[{"timestamp": int(event.get("timestamp", 0)), "message": json.dumps(event)}],
+            logEvents=[
+                {
+                    "timestamp": timestamp_millis,
+                    "message": json.dumps(event)
+                }
+            ],
         )
         return True
     except Exception as e:
         EXPORT_ERRORS.labels("cloudwatch").inc()
-        logger.exception("CloudWatch exporter error: %s", e)
+        logger.exception("CloudWatch exporter error", extra={"exception_detail": str(e), "log_group": group, "request_id": request_id})
         return False
 
 def export_event(event: dict):
     """Dispatch event to all exporters if enabled"""
     if not EXPORT_ENABLED:
-        return
+        return None
     send_to_splunk(event)
     send_to_datadog(event)
     send_to_cloudwatch(event)

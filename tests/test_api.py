@@ -1,11 +1,8 @@
-import os
-
 SAMPLE = "8=FIX.4.4|9=176|35=D|49=CLIENT12|56=BROKER03|34=215|52=20250927-12:30:05.123|11=12345|55=EUR/USD|54=1|38=1000000|40=2|44=1.1850|60=20250927-12:30:05|10=062|"
 
 
 def test_parse_endpoint_json_single(client):
     r = client.post("/parse", json={"raw": SAMPLE})
-    print(os.getenv("API_KEYS"))
     assert r.status_code == 200
     body = r.json()
     # API returns a 'flat' mapping and 'raw'
@@ -15,8 +12,8 @@ def test_parse_endpoint_json_single(client):
     parsed = body.get("parsed", {})
     assert "35" in parsed and parsed["35"]["value"] == "D"
 
-def test_ui_get(client):
-    r = client.get("/ui")
+def test_root_get(client):
+    r = client.get("/")
     assert r.status_code == 200
     # page should include the form textarea marker
-    assert "<textarea" in r.text
+    assert "swagger" in r.text
